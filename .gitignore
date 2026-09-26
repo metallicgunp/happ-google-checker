@@ -1,0 +1,18 @@
+# Конфиденциальные данные и персональные подписки
+config.json
+.env
+
+# Временные файлы тестирования Xray
+temp_*.json
+temp_check_*.json
+temp_chk_*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Windows / OS
+Thumbs.db
+.DS_Store
