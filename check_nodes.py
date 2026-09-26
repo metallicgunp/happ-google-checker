@@ -56,9 +56,23 @@ def find_xray_binary():
     in_path = shutil.which("xray")
     if in_path:
         return in_path
+        
+    # 2. Проверка в локальной папке проекта и домашних каталогах (Termux / Linux)
+    local_linux_candidates = [
+        "./xray",
+        os.path.expanduser("~/happ-google-checker/xray"),
+        os.path.expanduser("~/.happ-google-checker/xray"),
+        os.path.expandvars("$PREFIX/bin/xray"),
+        "/data/data/com.termux/files/usr/bin/xray",
+        "/usr/local/bin/xray",
+        "/usr/bin/xray"
+    ]
+    for p in local_linux_candidates:
+        if os.path.exists(p) and os.access(p, os.X_OK):
+            return p
     
     if sys.platform == "win32":
-        # 2. Стандартные пути установки Happ / v2ray в Windows
+        # 3. Стандартные пути установки Happ / v2ray в Windows
         candidates = [
             r"C:\Program Files\FlyFrogLLC\Happ\core\xray.exe",
             r"C:\Program Files (x86)\FlyFrogLLC\Happ\core\xray.exe",
