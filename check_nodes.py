@@ -47,7 +47,7 @@ BRIGHT = "\033[1m"
 RESET = "\033[0m"
 
 CONFIG_FILE = "config.json"
-DEFAULT_WORKERS = 15
+DEFAULT_WORKERS = 8
 PORT_START = 26000
 
 def find_xray_binary():
@@ -127,6 +127,19 @@ def load_or_prompt_sub_url(cli_url=None):
         
     return url
 
+import socket
+
+def wait_for_port(port, host="127.0.0.1", timeout=2.5):
+    """Ожидание готовности локального порта прокси перед отправкой запроса."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=0.2):
+                return True
+        except (OSError, ConnectionRefusedError):
+            time.sleep(0.08)
+    return False
+
 def test_node(idx, profile, xray_path, available_ports, port_lock, check_gemini=False):
     """Тестирование одной ноды через изолированный временный процесс Xray."""
     remark = profile.get("remarks", f"Profile #{idx+1}")
@@ -177,16 +190,22 @@ def test_node(idx, profile, xray_path, available_ports, port_lock, check_gemini=
         json.dump(temp_cfg, f)
         
     proc = subprocess.Popen([xray_path, "run", "-c", cfg_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.6)
     
     try:
+        # Проверяем, что Xray поднял порт
+        is_ready = wait_for_port(port, timeout=2.5)
+        if not is_ready:
+            res["google_status"] = "Xray Port Error"
+            res["google_loc"] = "Port Error"
+            return res
+
         cj = http.cookiejar.CookieJar()
         proxy_handler = urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"})
         opener = urllib.request.build_opener(proxy_handler, urllib.request.HTTPCookieProcessor(cj))
         
         # 1. Реальный IP и страна дата-центра
         try:
-            with opener.open("http://ip-api.com/json?fields=query,country,city", timeout=3.0) as ip_resp:
+            with opener.open("http://ip-api.com/json?fields=query,country,city", timeout=4.0) as ip_resp:
                 ip_data = json.loads(ip_resp.read().decode())
                 res["ip"] = ip_data.get("query")
                 res["isp_country"] = f"{ip_data.get('country')} ({ip_data.get('city')})"
@@ -202,7 +221,7 @@ def test_node(idx, profile, xray_path, available_ports, port_lock, check_gemini=
                     "Accept-Language": "en-US,en;q=0.9",
                 }
             )
-            with opener.open(g_req, timeout=3.5) as g_resp:
+            with opener.open(g_req, timeout=6.0) as g_resp:
                 html = g_resp.read().decode("utf-8", errors="ignore")
                 res["google_status"] = "200 OK"
                 
@@ -241,14 +260,19 @@ def test_node(idx, profile, xray_path, available_ports, port_lock, check_gemini=
                     "https://gemini.google.com/",
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 )
-                with opener.open(gem_req, timeout=3.0) as gem_resp:
+                with opener.open(gem_req, timeout=4.0) as gem_resp:
                     res["gemini_ok"] = (gem_resp.status == 200)
             except Exception:
                 res["gemini_ok"] = False
 
     finally:
-        proc.terminate()
-        proc.wait()
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except Exception:
+            try: proc.kill()
+            except Exception: pass
+            
         with port_lock:
             available_ports.append(port)
         if os.path.exists(cfg_file):
@@ -357,6 +381,7 @@ def main():
     clean_nodes = [r for r in results if r.get("google_status") == "200 OK" and not r.get("is_russia")]
     russia_nodes = [r for r in results if r.get("is_russia")]
     blocked_nodes = [r for r in results if "429" in str(r.get("google_status"))]
+    timeout_nodes = [r for r in results if r.get("google_status") not in ("200 OK", "429 Captcha") and not r.get("is_russia")]
 
     # 6. Вывод результатов
     if args.json:
@@ -366,7 +391,8 @@ def main():
             "clean_nodes_count": len(clean_nodes),
             "clean_nodes": clean_nodes,
             "russia_nodes": russia_nodes,
-            "blocked_nodes": blocked_nodes
+            "blocked_nodes": blocked_nodes,
+            "timeout_nodes": timeout_nodes
         }
         print(json.dumps(output_data, indent=2, ensure_ascii=False))
         return
@@ -390,6 +416,8 @@ def main():
     print(f"  • ✅ Чистые зарубежные серверы: {len(clean_nodes)}")
     print(f"  • ❌ Серверы с «загрязненным» IP (Google видит Россию): {len(russia_nodes)}")
     print(f"  • ⚠️ Серверы с капчей/ограничением Google (429): {len(blocked_nodes)}")
+    if timeout_nodes:
+        print(f"  • ⏱ Серверы с таймаутом / недоступные: {len(timeout_nodes)}")
     print(f"{CYAN}=========================================================================================={RESET}")
 
 if __name__ == "__main__":
